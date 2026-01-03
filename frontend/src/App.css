@@ -1,42 +1,242 @@
-#root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+/* src/App.css */
+
+/* * * * Tüm elemanlar için box-sizing tanımı * * * */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
-}
-
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+/* --- ANA YERLEŞİM (LAYOUT) --- */
+.main-layout {
+    display: grid;
+    /* Yan Panel (280px) | Ana İçerik (Geri Kalan) */
+    grid-template-columns: 280px 1fr; 
+    max-width: 1200px;
+    margin: 3vh auto; /* Sayfayı yatay ortala ve üstten boşluk bırak */
+    min-height: 94vh;
+    background: #ffffff;
+    box-shadow: 0 0 40px rgba(0, 50, 100, 0.1);
+    border-radius: 16px;
+    overflow: hidden;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+/* --- YAN PANEL (SIDEBAR) STİLİ --- */
+.sidebar {
+    background: #f8faff; 
+    padding: 20px;
+    border-right: 1px solid #e5f0ff;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
 }
 
-.card {
-  padding: 2em;
+.sidebar-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #0077B6;
+    margin-bottom: 5px;
 }
 
-.read-the-docs {
-  color: #888;
+.sidebar-menu-item {
+    background: #e9f5ff;
+    color: #0077B6;
+    padding: 12px 15px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: 0.2s;
+    border: 1px solid #cceeff;
+}
+
+.sidebar-menu-item.active {
+    background: #0077B6;
+    color: white;
+}
+
+.new-chat-button {
+    background: #0077B6;
+    color: white;
+    padding: 12px 15px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.conversation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+}
+
+.conversation-item {
+    background: #ffffff;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: 0.2s;
+    border: 1px solid #e0e0e0;
+}
+
+.conversation-item.active {
+    background: #e9f5ff;
+    border-color: #0077B6;
+}
+
+.conversation-title {
+    font-weight: 600;
+    display: block;
+}
+
+.conversation-last-message {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --- ANA İÇERİK ALANI --- */
+.chat-content-area {
+    padding: 25px;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.chat-header {
+    margin-bottom: 25px;
+    border-bottom: 2px solid #cceeff;
+    padding-bottom: 15px;
+}
+
+.title {
+    font-size: 2.8rem;
+    font-weight: 900;
+    color: #1c2e4a;
+    margin: 0;
+}
+
+.title-highlight { color: #0077B6; }
+
+.disclaimer {
+    font-size: 0.85rem;
+    color: #555;
+    display: flex;
+    align-items: center;
+    margin-top: 5px;
+}
+
+/* --- SOHBET KUTUSU VE BALONLAR --- */
+.chat-box {
+    flex-grow: 1;
+    padding: 15px;
+    overflow-y: auto;
+    background: #ffffff;
+    margin-bottom: 15px;
+}
+
+.chat-bubble {
+    margin: 10px 0;
+    padding: 12px 18px;
+    border-radius: 18px;
+    max-width: 85%;
+    line-height: 1.5;
+    display: flex;
+    gap: 10px;
+}
+
+.chat-bubble.user {
+    background: #D8EBFD;
+    margin-left: auto;
+    border-bottom-right-radius: 4px;
+}
+
+.chat-bubble.assistant {
+    background: #f0f0f0;
+    margin-right: auto;
+    border-bottom-left-radius: 4px;
+}
+
+/* --- GİRDİ ALANI --- */
+.input-area {
+    display: flex;
+    gap: 12px;
+    padding: 15px;
+    background: #ffffff;
+    border-top: 1px solid #eee;
+}
+
+.chat-input {
+    flex: 1;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid #ddd;
+    font-size: 1rem;
+}
+
+.send-button {
+    background: #0077B6;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    width: 50px;
+    height: 45px;
+    cursor: pointer;
+}
+
+/* --- RANDEVU KARTI --- */
+.appointment-card {
+    margin-top: 15px;
+    padding: 20px;
+    border-radius: 12px;
+    background: #fff;
+    border-left: 5px solid #0077B6;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.doctor-slot-row {
+    margin-top: 10px;
+    padding: 10px;
+    background: #f9f9f9;
+    border-radius: 8px;
+}
+
+.slot-button {
+    margin: 4px;
+    padding: 6px 12px;
+    border: 1px solid #0077B6;
+    background: white;
+    color: #0077B6;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+/* --- RANDEVULARIM LİSTESİ --- */
+.appointment-list-item {
+    display: flex;
+    align-items: center;
+    background: white;
+    border: 1px solid #e5f0ff;
+    padding: 15px;
+    margin-bottom: 10px;
+    border-radius: 10px;
+}
+
+.app-status {
+    margin-left: auto;
+    background: #28a745;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
 }

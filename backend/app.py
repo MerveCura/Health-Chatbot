@@ -1,22 +1,20 @@
 # backend/app.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os, json, datetime
-import re
+import os, json, datetime, re
 
-from backend.ml_intent import predict_intent, predict_department
-from backend.db_sqlite import init_db, availability, book_appointment
+from ml_intent import predict_intent, predict_department
+from db_sqlite import init_db, availability, book_appointment
 
-# LLM (Ollama)
-from backend.llm_client import llm_reply
+# LLM (EN üretim + TR çeviri)
+from llm_client import llm_reply_en, translate_to_tr
 
-# RAG (sadece lab + gündelik öneri)
-# backend/rag/rag_store.py dosyan olmalı
-from backend.rag.rag_store import build_or_load_collection, retrieve
+# RAG
+from rag.rag_store import build_or_load_collection, retrieve
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.6.0"
 
 # ---- Logger ----
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -25,7 +23,7 @@ LOG_FILE = os.path.join(LOG_DIR, "chat.log")
 
 def log_event(kind: str, payload: dict):
     rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "kind": kind, **payload}
-    print(f"[{rec['ts']}][{kind}] {payload}")
+    print(f"[{rec['ts']}][{kind}] {payload}", flush=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
@@ -33,7 +31,7 @@ def log_event(kind: str, payload: dict):
 init_db()
 
 # ---------------------------
-# RAG INIT (daily + lab)
+# RAG INIT
 # ---------------------------
 BASE_DIR = os.path.dirname(__file__)
 RAG_PERSIST_DIR = os.path.join(BASE_DIR, "ragdata")
@@ -48,11 +46,10 @@ try:
     daily_col = build_or_load_collection(RAG_PERSIST_DIR, "daily", DAILY_KNOW_DIR)
     lab_col   = build_or_load_collection(RAG_PERSIST_DIR, "lab",   LAB_KNOW_DIR)
 except Exception as e:
-    # RAG çökerse sistem çalışmaya devam etsin
     log_event("rag_init_error", {"error": str(e)})
 
 # ---------------------------
-# LAB tespiti (intent=lab zaten var ama ek güvenlik için)
+# LAB tespiti (ek güvenlik)
 # ---------------------------
 LAB_PATTERNS = [
     r"\bhba1c\b", r"\bldl\b", r"\bhdl\b", r"\btrigliser", r"\bkolesterol\b",
@@ -66,54 +63,63 @@ def looks_like_lab(text: str) -> bool:
     for p in LAB_PATTERNS:
         if re.search(p, t):
             return True
-    # sayı + birim gibi işaretler
     if re.search(r"\b\d+([.,]\d+)?\s*(mg/dl|mmol/l|iu/l|miu/l|ng/ml|pg/ml|%)\b", t):
         return True
     return False
 
-def rag_reply(user_message: str, mode: str) -> str:
+# ---------------------------
+# LLM yardımcıları (EN -> TR)
+# ---------------------------
+RETURN_EN_DEBUG = os.getenv("RETURN_EN_DEBUG", "0") == "1"
+
+def llm_en_to_tr(en_text: str) -> str:
+    try:
+        return translate_to_tr(en_text)
+    except Exception as e:
+        log_event("translate_error", {"error": str(e)})
+        return en_text
+
+def generate_reply_tr(user_message: str, *, context: dict | None = None) -> tuple[str, str]:
     """
-    mode: "daily" veya "lab"
-    Kurallı akışı bozmaz: sadece 2-4 cümlelik öneri metnini üretir.
+    EN üretir, TR çevirir.
+    return: (tr_text, en_text)
+    """
+    en = llm_reply_en(user_message=user_message, context=context or {})
+    tr = llm_en_to_tr(en)
+    return tr, en
+
+# ---------------------------
+# RAG + LLM (EN üretim, sonra TR)
+# ---------------------------
+def rag_llm_tr(user_message: str, *, mode: str, extra_context: dict | None = None) -> tuple[str, str, list[str]]:
+    """
+    mode: "daily" | "lab"
+    1) RAG retrieve
+    2) LLM EN üretim (context içine RAG chunk'ları koy)
+    3) TR çeviri
     """
     col = lab_col if mode == "lab" else daily_col
     if col is None:
         raise RuntimeError("RAG collection not ready")
 
-    chunks = retrieve(col, user_message, k=3)
-
-    if mode == "lab":
-        rules = (
-            "SADECE Türkçe yaz. 2–4 cümle yaz. Soru sorma. "
-            "İlaç ismi, doz veya tedavi önerme. "
-            "Laboratuvar sonuçları kişiye göre değişebilir; genel çerçevede yorumla. "
-            "Nazikçe doktorla değerlendirmeyi öner."
-        )
-        task = "rag_lab"
-    else:
-        rules = (
-            "SADECE Türkçe yaz. 2–4 cümle yaz. Soru sorma. "
-            "İlaç ismi, doz veya tedavi önerme. "
-            "Gündelik hayatta güvenli, basit öneriler ver. "
-            "Nazikçe doktora görünmeyi önerebilirsin."
-        )
-        task = "rag_daily"
-
-    context_text = "\n".join([f"- {c}" for c in chunks]) if chunks else "- (Bağlam yok)"
+    chunks = retrieve(col, user_message, k=3)  # list[str]
+    ctx = dict(extra_context or {})
+    ctx["rag_mode"] = mode
+    ctx["rag_chunks"] = chunks
 
     prompt = (
-        f"{rules}\n\n"
-        f"BAĞLAM:\n{context_text}\n\n"
-        f"KULLANICI MESAJI:\n{user_message}\n\n"
-        f"YANIT:"
+        "Use the provided context (if any) to produce a safe, helpful reply.\n\n"
+        f"USER:\n{user_message}\n\n"
+        f"CONTEXT BULLETS:\n" + "\n".join([f"- {c}" for c in chunks]) + "\n\n"
+        "ANSWER:"
     )
 
-    # llm_client.py mevcut imzana uygun çağrı
-    return llm_reply(
-        user_message=prompt,
-        context={"task": task}
-    )
+    tr, en = generate_reply_tr(prompt, context=ctx)
+    return tr, en, chunks
 
+# ---------------------------
+# Routes
+# ---------------------------
 @app.get("/")
 def index():
     return jsonify({"ok": True, "service": "health-chatbot-backend", "version": APP_VERSION})
@@ -131,7 +137,7 @@ def chat():
 
     intent = predict_intent(user)
 
-    # --- 1) URGENT: daima rule-based (güvenlik) ---
+    # 1) URGENT: TR sabit (UI güvenliği)
     if intent == "urgent":
         resp = {
             "reply": (
@@ -139,107 +145,126 @@ def chat():
                 "ve en yakın sağlık kuruluşuna başvurun. (Bu sistem tıbbi teşhis koymaz.)"
             ),
             "intent": intent,
-            "source": "rule-based"
+            "source": "rule-based",
         }
 
-    # --- 2) ROUTE: branş/slotları rule-based çıkar, açıklamayı LLM yazsın (Aynen bırakıldı) ---
+    # 2) ROUTE: branşı rule-based bul, ama açıklamayı LLM+RAG ile güçlendir (A)
     elif intent == "route":
         dept_code, dept_name = predict_department(user)
 
         if not dept_code:
-            # Kullanıcıdan detay iste (LLM)
             try:
-                reply_text = llm_reply(
+                tr, en = generate_reply_tr(
                     user_message=user,
                     context={"task": "department_routing_missing"}
                 )
-                source = "llm"
+                resp = {"reply": tr, "intent": intent, "source": "llm"}
+                if RETURN_EN_DEBUG:
+                    resp["reply_en"] = en
             except Exception as e:
-                reply_text = "Şikâyetini biraz daha detaylandırırsan uygun branşı önerebilirim."
-                source = "rule-based"
                 log_event("llm_error", {"where": "route_no_dept", "error": str(e)})
-
-            resp = {"reply": reply_text, "intent": intent, "source": source}
+                resp = {"reply": "Şikâyetini biraz daha detaylandırırsan uygun branşı önerebilirim.", "intent": intent, "source": "rule-based"}
 
         else:
             slots = availability(dept_code)
 
-            # LLM açıklama üretsin (şablonlu ve kontrollü)
             try:
-                reply_text = llm_reply(
-                    user_message=user,
-                    context={
-                        "task": "department_routing",
+                tr, en, chunks = rag_llm_tr(
+                    user,
+                    mode="daily",
+                    extra_context={
+                        "task": "department_routing_with_rag",
                         "department": {"code": dept_code, "name": dept_name}
                     }
                 )
-                source = "llm"
+                resp = {
+                    "reply": tr,
+                    "intent": intent,
+                    "source": "rag+llm",
+                    "department": {"code": dept_code, "name": dept_name},
+                    "availability": slots,
+                }
+                if RETURN_EN_DEBUG:
+                    resp["reply_en"] = en
+                    resp["rag_chunks"] = chunks
             except Exception as e:
-                reply_text = f"Ön değerlendirme: {dept_name} uygun görünebilir."
-                source = "rule-based"
-                log_event("llm_error", {"where": "route_with_dept", "error": str(e)})
+                log_event("rag_error", {"where": "route_with_dept", "error": str(e)})
+                try:
+                    tr, en = generate_reply_tr(
+                        user_message=user,
+                        context={"task": "department_routing", "department": {"code": dept_code, "name": dept_name}}
+                    )
+                    resp = {
+                        "reply": tr,
+                        "intent": intent,
+                        "source": "llm",
+                        "department": {"code": dept_code, "name": dept_name},
+                        "availability": slots
+                    }
+                    if RETURN_EN_DEBUG:
+                        resp["reply_en"] = en
+                except Exception as e2:
+                    log_event("llm_error", {"where": "route_with_dept_fallback", "error": str(e2)})
+                    resp = {
+                        "reply": f"Ön değerlendirme: {dept_name} uygun görünebilir.",
+                        "intent": intent,
+                        "source": "rule-based",
+                        "department": {"code": dept_code, "name": dept_name},
+                        "availability": slots
+                    }
 
-            resp = {
-                "reply": reply_text or f"Ön değerlendirme: {dept_name} uygun görünebilir.",
-                "intent": intent,
-                "source": source,
-                "department": {"code": dept_code, "name": dept_name},
-                "availability": slots
-            }
-
-    # --- 3) LAB: RAG ile daha anlamlı kısa yönlendirme (Kurallı bozulmaz) ---
+    # 3) LAB: RAG lab -> EN üretim -> TR
     elif intent == "lab":
         try:
-            # ek güvenlik: intent lab ama içerik değilse yine çalışır; sorun olmaz
-            reply_text = rag_reply(user, mode="lab")
-            source = "rag"
+            tr, en, chunks = rag_llm_tr(user, mode="lab", extra_context={"task": "lab_rag"})
+            resp = {"reply": tr, "intent": intent, "source": "rag+llm"}
+            if RETURN_EN_DEBUG:
+                resp["reply_en"] = en
+                resp["rag_chunks"] = chunks
         except Exception as e:
-            # RAG olmazsa mevcut LLM fallback
-            try:
-                reply_text = llm_reply(user_message=user, context={"task": "lab_help"})
-                source = "llm"
-            except Exception as e2:
-                reply_text = (
-                    "Laboratuvar değerleri yaş/cinsiyet/öykü bağlamında yorumlanır. "
-                    "Lütfen parametre adını, değerini, birimini ve referans aralığını yaz."
-                )
-                source = "rule-based"
-                log_event("llm_error", {"where": "lab_fallback", "error": str(e2)})
-
             log_event("rag_error", {"where": "lab", "error": str(e)})
+            try:
+                tr, en = generate_reply_tr(user_message=user, context={"task": "lab_help"})
+                resp = {"reply": tr, "intent": intent, "source": "llm"}
+                if RETURN_EN_DEBUG:
+                    resp["reply_en"] = en
+            except Exception as e2:
+                log_event("llm_error", {"where": "lab_fallback", "error": str(e2)})
+                resp = {
+                    "reply": (
+                        "Laboratuvar değerleri yaş/cinsiyet/öykü bağlamında yorumlanır. "
+                        "Parametre adını, değerini, birimini ve referans aralığını ekleyip doktorla değerlendirmen iyi olur."
+                    ),
+                    "intent": intent,
+                    "source": "rule-based"
+                }
 
-        resp = {"reply": reply_text, "intent": intent, "source": source}
-
-    # --- 4) GENERAL: gündelik öneriyi RAG ile güçlendir ---
+    # 4) GENERAL: daily RAG (lab gibi görünürse lab'a çek)
     else:
-        # Eğer mesaj açıkça lab gibi görünüyorsa intent general olsa bile lab RAG'e alabiliriz.
-        # (İstersen bunu kapatırız; şimdilik akıllı davranış.)
         use_lab = looks_like_lab(user)
-
         try:
             if use_lab:
-                reply_text = rag_reply(user, mode="lab")
-                source = "rag"
+                tr, en, chunks = rag_llm_tr(user, mode="lab", extra_context={"task": "general_looks_like_lab"})
                 out_intent = "lab"
             else:
-                reply_text = rag_reply(user, mode="daily")
-                source = "rag"
+                tr, en, chunks = rag_llm_tr(user, mode="daily", extra_context={"task": "general_daily_rag"})
                 out_intent = "general"
+
+            resp = {"reply": tr, "intent": out_intent, "source": "rag+llm"}
+            if RETURN_EN_DEBUG:
+                resp["reply_en"] = en
+                resp["rag_chunks"] = chunks
+
         except Exception as e:
-            # RAG olmazsa mevcut LLM fallback
-            try:
-                reply_text = llm_reply(user_message=user, context={"task": "general_health_info"})
-                source = "llm"
-                out_intent = "general"
-            except Exception as e2:
-                reply_text = "Şu anda yanıt üretilemiyor."
-                source = "rule-based"
-                out_intent = "general"
-                log_event("llm_error", {"where": "general", "error": str(e2)})
-
             log_event("rag_error", {"where": "general", "error": str(e)})
-
-        resp = {"reply": reply_text, "intent": out_intent, "source": source}
+            try:
+                tr, en = generate_reply_tr(user_message=user, context={"task": "general_health_info"})
+                resp = {"reply": tr, "intent": "general", "source": "llm"}
+                if RETURN_EN_DEBUG:
+                    resp["reply_en"] = en
+            except Exception as e2:
+                log_event("llm_error", {"where": "general_fallback", "error": str(e2)})
+                resp = {"reply": "Şu anda yanıt üretilemiyor.", "intent": "general", "source": "rule-based"}
 
     log_event("chat", {"req": user, **resp})
     return jsonify(resp)
@@ -283,4 +308,5 @@ def chat_options():
     return ("", 204)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    # Debug reloader logları kaçırıyordu; docker için kapatıyoruz
+    app.run(host="0.0.0.0", port=8000, debug=False, use_reloader=False)

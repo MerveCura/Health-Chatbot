@@ -1,52 +1,60 @@
+# backend/llm_client.py
 import os
 import requests
 
-# ---- Config ----
-DEFAULT_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
 
-def _guess_ollama_url() -> str:
-    """
-    Priority:
-    1) OLLAMA_URL env
-    2) If running inside docker -> host.docker.internal
-    3) Local fallback -> 127.0.0.1
-    """
-    env_url = os.getenv("OLLAMA_URL")
-    if env_url:
-        return env_url.rstrip("/")
+EN_SYSTEM = """
+You are a calm, friendly health support assistant.
 
-    # Docker tespiti (yaygın)
-    in_docker = os.path.exists("/.dockerenv") or os.getenv("RUNNING_IN_DOCKER") == "1"
-    if in_docker:
-        return "http://host.docker.internal:11434"
+STRICT RULES:
+- Write ONLY in English.
+- 2–4 sentences.
+- Do NOT ask questions.
+- Do NOT suggest medications, dosages, or treatments.
+- Give safe, everyday self-care suggestions.
+- You may gently suggest seeing a doctor at the end.
+"""
 
-    return "http://127.0.0.1:11434"
+TR_TRANSLATE_SYSTEM = """
+Sen Türkçe konuşan, sakin ve samimi bir sağlık destek asistanısın.
 
-OLLAMA_URL = _guess_ollama_url()
+KURALLAR (KESİN):
+- SADECE Türkçe yaz.
+- 2–4 cümle yaz.
+- Soru sorma.
+- İlaç ismi, doz veya tedavi önerme.
+- Gündelik hayatta güvenli, basit öneriler ver.
+- En sonda nazikçe doktora görünmeyi önerebilirsin.
+- İngilizce kelime kullanma.
+"""
 
-def llm_reply(user_message: str, context: dict | None = None) -> str:
-    """
-    Ollama /api/generate ile kısa yanıt üretir.
-    Hata fırlatır -> app.py yakalayıp rule-based'e düşer.
-    """
+def _ollama_generate(prompt: str) -> str:
     payload = {
-        "model": DEFAULT_MODEL,
-        "prompt": user_message,
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
         "stream": False,
-        # İstersen biraz "daha tutarlı" olsun diye:
-        "options": {
-            "temperature": 0.3,
-            "top_p": 0.9,
-        }
     }
+    r = requests.post(OLLAMA_URL, json=payload, timeout=90)
+    r.raise_for_status()
+    data = r.json()
+    text = (data.get("response") or "").strip()
+    if not text:
+        return "Şu anda yanıt üretilemiyor."
+    return text
 
-    # context'i prompta gömmek istiyorsan burada birleştir (senin app.py zaten prompt hazırlıyor)
-    # O yüzden burada ekstra bir şey yapmıyoruz.
-    try:
-        r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
-        r.raise_for_status()
-        data = r.json()
-        return (data.get("response") or "").strip()
-    except Exception:
-        # burayı app.py logluyor zaten; hatayı yukarı fırlat
-        raise
+def llm_reply_en(user_message: str, context: dict | None = None) -> str:
+    ctx = ""
+    if context:
+        ctx = f"\n\n[CONTEXT]\n{context}\n"
+    prompt = f"{EN_SYSTEM}\n{ctx}\nUser message:\n{user_message}\n\nAnswer:"
+    return _ollama_generate(prompt)
+
+def translate_to_tr(english_text: str) -> str:
+    prompt = (
+        f"{TR_TRANSLATE_SYSTEM}\n\n"
+        f"Aşağıdaki metni kurallara uyarak Türkçeye çevir:\n"
+        f"{english_text}\n\nTürkçe yanıt:"
+    )
+    return _ollama_generate(prompt)

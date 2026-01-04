@@ -3,3 +3,5 @@ flask-cors
 openai
 python-dotenv
 requests
+chromadb
+sentence-transformers

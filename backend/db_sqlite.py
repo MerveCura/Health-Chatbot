@@ -2,7 +2,7 @@
 import os, sqlite3, uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
-from ml_intent import DEPTS  # {"ortopedi":"Ortopedi / FTR", ...}
+from backend.ml_intent import DEPTS  # {"ortopedi":"Ortopedi / FTR", ...}
 
 BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "data")

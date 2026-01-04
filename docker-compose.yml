@@ -1,24 +1,18 @@
 services:
   backend:
-    build:
-      context: .
+    build: ./backend
     container_name: health-backend
     ports:
       - "8000:8000"
     environment:
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_URL=http://host.docker.internal:11434/api/generate
       - OLLAMA_MODEL=llama3.2:1b
       - PYTHONUNBUFFERED=1
-    volumes:
-      - ./backend/data:/app/backend/data
-      - ./backend/logs:/app/backend/logs
-      - ./backend/ragdata:/app/backend/ragdata
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
   frontend:
-    build:
-      context: ./frontend
+    build: ./frontend
     container_name: health-frontend
     ports:
       - "5173:5173"
